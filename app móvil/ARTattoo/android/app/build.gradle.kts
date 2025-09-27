@@ -20,10 +20,7 @@ android {
     }
 
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId = "com.example.artattoo"
-        // You can update the following values to match your application needs.
-        // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
@@ -32,8 +29,7 @@ android {
 
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
+            // Solo para pruebas: firma con debug. Cambia esto para tu release real.
             signingConfig = signingConfigs.getByName("debug")
         }
     }
@@ -41,4 +37,13 @@ android {
 
 flutter {
     source = "../.."
+}
+
+dependencies {
+    // Material Components (necesario para Theme.Material3.* y widgets Material)
+    implementation("com.google.android.material:material:1.12.0")
+
+    // (Opcional pero útil) compat y core-ktx
+    implementation("androidx.appcompat:appcompat:1.7.0")
+    implementation("androidx.core:core-ktx:1.13.1")
 }
