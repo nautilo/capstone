@@ -11,38 +11,146 @@ class Api {
 
   static Future<void> init() async {
     _prefs = await SharedPreferences.getInstance();
-    final t = _prefs?.getString('token');
-    final r = _prefs?.getString('role');
-    final n = _prefs?.getString('name');
+
+    final t  = _prefs?.getString('token');
+    final rt = _prefs?.getString('refresh_token');
+    final r  = _prefs?.getString('role');
+    final n  = _prefs?.getString('name');
     final id = _prefs?.getInt('uid');
+
     if (t != null && r != null && n != null && id != null) {
-      authState.set(token: t, role: r, name: n, userId: id);
+      authState.set(
+        token: t,
+        refreshToken: rt,
+        role: r,
+        name: n,
+        userId: id,
+      );
+    } else {
+      authState.clear();
     }
-    // DEBUG: imprime si hay token cargado
-    print('[Api.init] token loaded? ${authState.token != null}');
   }
 
+  // ---------- Storage helpers ----------
   static Future<void> _save(Map data) async {
-    await _prefs?.setString('token', data['access_token']);
-    await _prefs?.setString('role', data['role']);
-    await _prefs?.setString('name', data['name']);
-    await _prefs?.setInt('uid', data['user_id']);
+    final access  = data['access_token'] as String?;
+    final refresh = data['refresh_token'] as String?;
+    final role    = data['role'] as String?;
+    final name    = data['name'] as String?;
+    final uidAny  = data['user_id'];
+
+    final uid = uidAny is int ? uidAny : int.tryParse('$uidAny');
+
+    if (access != null) await _prefs?.setString('token', access);
+    if (refresh != null) await _prefs?.setString('refresh_token', refresh);
+    if (role != null) await _prefs?.setString('role', role);
+    if (name != null) await _prefs?.setString('name', name);
+    if (uid != null) await _prefs?.setInt('uid', uid);
+
+    if (access != null && role != null && name != null && uid != null) {
+      authState.set(
+        token: access,
+        refreshToken: refresh,
+        role: role,
+        name: name,
+        userId: uid,
+      );
+    }
   }
 
-  static Map<String, String> _headers({bool withAuth = true}) {
+  static Future<void> logout() async {
+    await _prefs?.clear();
+    authState.clear();
+  }
+
+  // ---------- Headers ----------
+  static Map<String, String> _headers({bool withAuth = true, String? tokenOverride}) {
     final h = {'Content-Type': 'application/json'};
     if (withAuth) {
-      final t = authState.token;
+      final t = tokenOverride ?? authState.token;
       if (t != null && t.isNotEmpty) {
         h['Authorization'] = 'Bearer $t';
-      } else {
-        print('[Api._headers] WARNING: no token present for authenticated request');
       }
     }
     return h;
   }
 
-  // ---- Auth ----
+  // ---------- JWT helpers (exp & refresh) ----------
+  static int? _jwtExp(String jwt) {
+    try {
+      final parts = jwt.split('.');
+      if (parts.length != 3) return null;
+      final payload = utf8.decode(base64Url.decode(base64Url.normalize(parts[1])));
+      final map = jsonDecode(payload) as Map<String, dynamic>;
+      final exp = map['exp'];
+      if (exp is int) return exp;                 // segundos Unix
+      if (exp is String) return int.tryParse(exp);
+    } catch (_) {}
+    return null;
+  }
+
+  static bool _isExpiringSoon(String jwt, {int seconds = 60}) {
+    final exp = _jwtExp(jwt);
+    if (exp == null) return false;
+    final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+    return (exp - now) <= seconds;
+  }
+
+  static Future<String?> _refreshAccessToken() async {
+    final rt = authState.refreshToken;
+    if (rt == null || rt.isEmpty) return null;
+
+    final r = await http.post(
+      Uri.parse('$base/auth/refresh'),
+      headers: _headers(tokenOverride: rt),
+    );
+    if (r.statusCode == 200) {
+      final data = jsonDecode(r.body) as Map<String, dynamic>;
+      final newTok = data['access_token'] as String?;
+      if (newTok != null) {
+        await _prefs?.setString('token', newTok);
+        authState.updateAccess(newTok);
+      }
+      return newTok;
+    }
+    return null;
+  }
+
+  static Future<String?> ensureValidToken() async {
+    final tok = authState.token;
+    if (tok == null || tok.isEmpty) return null;
+    if (_isExpiringSoon(tok)) {
+      return await _refreshAccessToken() ?? tok;
+    }
+    return tok;
+  }
+
+  // ---------- Requests con retry en 401 ----------
+  static Future<http.Response> authedGet(Uri uri) async {
+    await ensureValidToken();
+    var resp = await http.get(uri, headers: _headers());
+    if (resp.statusCode == 401) {
+      final newTok = await _refreshAccessToken();
+      if (newTok != null) {
+        resp = await http.get(uri, headers: _headers());
+      }
+    }
+    return resp;
+  }
+
+  static Future<http.Response> authedPost(Uri uri, {Object? body}) async {
+    await ensureValidToken();
+    var resp = await http.post(uri, headers: _headers(), body: body);
+    if (resp.statusCode == 401) {
+      final newTok = await _refreshAccessToken();
+      if (newTok != null) {
+        resp = await http.post(uri, headers: _headers(), body: body);
+      }
+    }
+    return resp;
+  }
+
+  // ---------- Auth ----------
   static Future<String?> login(String email, String pass) async {
     final r = await http.post(
       Uri.parse('$base/auth/login'),
@@ -50,19 +158,12 @@ class Api {
       body: jsonEncode({'email': email, 'password': pass}),
     );
     if (r.statusCode == 200) {
-      final data = jsonDecode(r.body);
+      final data = jsonDecode(r.body) as Map<String, dynamic>;
       await _save(data);
-      authState.set(
-        token: data['access_token'],
-        role: data['role'],
-        name: data['name'],
-        userId: data['user_id'],
-      );
-      print('[Api.login] token set? ${authState.token != null}');
       return null;
     }
     try {
-      return jsonDecode(r.body)['msg'];
+      return (jsonDecode(r.body) as Map)['msg'] as String?;
     } catch (_) {
       return 'Error de login';
     }
@@ -79,20 +180,19 @@ class Api {
       headers: _headers(withAuth: false),
       body: jsonEncode({'email': email, 'password': pass, 'role': role, 'name': name}),
     );
-    if (r.statusCode == 201) return null; // ok
+    if (r.statusCode == 201) {
+      // ideal: backend devuelve tokens; si no, hacemos login
+      final err = await login(email, pass);
+      return err; // null si ok
+    }
     try {
-      return jsonDecode(r.body)['msg'];
+      return (jsonDecode(r.body) as Map)['msg'] as String?;
     } catch (_) {
       return 'Error de registro';
     }
   }
 
-  static Future<void> logout() async {
-    await _prefs?.clear();
-    authState.clear();
-  }
-
-  // ---- Designs ----
+  // ---------- Designs ----------
   static Future<List<Map<String, dynamic>>> getDesigns({int? artistId}) async {
     final q = artistId != null ? '?artist_id=$artistId' : '';
     final r = await http.get(Uri.parse('$base/designs$q'));
@@ -106,14 +206,8 @@ class Api {
     String? imageUrl,
     int? price,
   }) async {
-    if (authState.token == null || authState.token!.isEmpty) {
-      throw Exception('No hay token en memoria. Cierra sesión e inicia nuevamente.');
-    }
-    print('[Api.createDesign] using token (first 12): ${authState.token!.substring(0, 12)}...');
-
-    final r = await http.post(
+    final r = await authedPost(
       Uri.parse('$base/designs'),
-      headers: _headers(),
       body: jsonEncode({
         'title': title,
         'description': description,
@@ -121,12 +215,13 @@ class Api {
         'price': price,
       }),
     );
-    if (r.statusCode == 201) return jsonDecode(r.body);
-    print('[Api.createDesign] status=${r.statusCode} body=${r.body}');
-    throw Exception(_safeMsg(r.body) ?? 'Error creando diseño');
+    if (r.statusCode != 201) {
+      throw Exception(_safeMsg(r.body) ?? 'Error creando diseño');
+    }
+    return jsonDecode(r.body);
   }
 
-  // ---- Appointments ----
+  // ---------- Appointments ----------
   static Future<Map> book({
     required int designId,
     required int artistId,
@@ -134,34 +229,35 @@ class Api {
     int durationMin = 60,
     bool payNow = false,
   }) async {
-    final r = await http.post(
+    final r = await authedPost(
       Uri.parse('$base/appointments'),
-      headers: _headers(),
       body: jsonEncode({
         'design_id': designId,
         'artist_id': artistId,
         'start_time': start.toIso8601String(),
         'duration_minutes': durationMin,
-        'pay_now': payNow
+        'pay_now': payNow,
       }),
     );
-    if (r.statusCode >= 400) throw Exception(_safeMsg(r.body) ?? 'Error al reservar');
+    if (r.statusCode >= 400) {
+      throw Exception(_safeMsg(r.body) ?? 'Error al reservar');
+    }
     return jsonDecode(r.body);
   }
 
   static Future<List<Map<String, dynamic>>> myAppointments() async {
-    final r = await http.get(Uri.parse('$base/appointments/me'), headers: _headers());
+    final r = await authedGet(Uri.parse('$base/appointments/me'));
     if (r.statusCode != 200) throw Exception('Error al cargar reservas');
     return List<Map<String, dynamic>>.from(jsonDecode(r.body));
   }
 
   static Future<void> markPaid(int id) async {
-    final r = await http.post(Uri.parse('$base/appointments/$id/pay'), headers: _headers());
+    final r = await authedPost(Uri.parse('$base/appointments/$id/pay'));
     if (r.statusCode != 200) throw Exception('No se pudo marcar pago');
   }
 
   static Future<void> cancel(int id) async {
-    final r = await http.post(Uri.parse('$base/appointments/$id/cancel'), headers: _headers());
+    final r = await authedPost(Uri.parse('$base/appointments/$id/cancel'));
     if (r.statusCode != 200) throw Exception('No se pudo cancelar');
   }
 

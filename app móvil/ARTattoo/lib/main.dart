@@ -2,10 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'core/api.dart';
 import 'core/auth_state.dart';
+import 'core/chat_api.dart';
 import 'screens/login_screen.dart';
 import 'screens/catalog_screen.dart';
 import 'screens/appointments_screen.dart';
 import 'screens/create_design_screen.dart';
+import 'screens/artist_profile_screen.dart';
+import 'screens/threads_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -147,6 +150,43 @@ class ARTattooApp extends StatelessWidget {
         CatalogScreen.route: (_) => const CatalogScreen(),
         AppointmentsScreen.route: (_) => const AppointmentsScreen(),
         '/create-design': (_) => const CreateDesignScreen(),
+        // Ruta nombrada para ver hilos de chat
+        ThreadsScreen.route: (_) {
+          final t = authState.token;
+          if (t == null || t.isEmpty) {
+            // Si no hay sesión, redirige a login
+            return const LoginScreen();
+          }
+          return ThreadsScreen(api: ChatApi(t));
+        },
+        // Ruta rápida al perfil del artista (sin args -> placeholder)
+        ArtistProfileScreen.route: (_) => const ArtistProfileScreen(artistId: 0),
+      },
+      // onGenerateRoute para pasar argumentos dinámicos (artistId/artistName)
+      onGenerateRoute: (settings) {
+        if (settings.name == ArtistProfileScreen.route &&
+            settings.arguments is Map) {
+          final args = settings.arguments as Map;
+          final int artistId = args['artistId'] as int;
+          final String? artistName = args['artistName'] as String?;
+          return MaterialPageRoute(
+            builder: (_) => ArtistProfileScreen(
+              artistId: artistId,
+              artistName: artistName,
+            ),
+            settings: settings,
+          );
+        }
+        // Ruta para Threads con posibilidad de inyectar token (poco común, pero útil en tests)
+        if (settings.name == ThreadsScreen.route &&
+            settings.arguments is String) {
+          final token = settings.arguments as String;
+          return MaterialPageRoute(
+            builder: (_) => ThreadsScreen(api: ChatApi(token)),
+            settings: settings,
+          );
+        }
+        return null;
       },
     );
   }

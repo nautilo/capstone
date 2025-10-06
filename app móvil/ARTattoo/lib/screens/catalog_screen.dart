@@ -1,7 +1,10 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import '../core/api.dart';
 import '../core/auth_state.dart';
 import '../widgets/common.dart';
+import '../core/chat_api.dart';
+import 'threads_screen.dart';
 import 'design_detail_screen.dart';
 import 'appointments_screen.dart';
 import 'create_design_screen.dart';
@@ -16,22 +19,78 @@ class CatalogScreen extends StatefulWidget {
 class _CatalogScreenState extends State<CatalogScreen> {
   late Future<List<Map<String, dynamic>>> _future;
 
+  // ---- Unread badge ----
+  int _unread = 0;
+  Timer? _poll;
+
   @override
   void initState() {
     super.initState();
     _future = Api.getDesigns();
+    _startUnreadPolling();
   }
 
+  @override
+  void dispose() {
+    _poll?.cancel();
+    super.dispose();
+  }
+
+  // ---- Polling de no leídos ----
+  void _startUnreadPolling() {
+    _fetchUnread(); // primer fetch inmediato
+    _poll?.cancel();
+    _poll = Timer.periodic(const Duration(seconds: 5), (_) => _fetchUnread());
+  }
+
+  Future<void> _fetchUnread() async {
+    try {
+      final t = authState.token;
+      if (t == null || t.isEmpty) {
+        if (mounted && _unread != 0) setState(() => _unread = 0);
+        return;
+      }
+      final api = ChatApi(t);
+      final threads = await api.listThreads();
+      int total = 0;
+      for (final th in threads) {
+        final v = th['unread'];
+        if (v is int) total += v;
+        if (v is String) total += int.tryParse(v) ?? 0;
+      }
+      if (mounted && total != _unread) setState(() => _unread = total);
+    } catch (_) {
+      // Silenciar fallos intermitentes
+    }
+  }
+
+  // ---- Acciones ----
   Future<void> _refresh() async {
     setState(() => _future = Api.getDesigns());
   }
 
   Future<void> _goCreateDesign() async {
-    final created = await Navigator.push(
+    await Navigator.push(
       context,
       MaterialPageRoute(builder: (_) => const CreateDesignScreen()),
     );
     if (mounted) _refresh();
+  }
+
+  void _goThreads() {
+    final t = authState.token;
+    if (t == null || t.isEmpty) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Debes iniciar sesión')));
+      return;
+    }
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => ThreadsScreen(api: ChatApi(t))),
+    ).then((_) {
+      // refresca contador al volver
+      _fetchUnread();
+    });
   }
 
   @override
@@ -39,6 +98,44 @@ class _CatalogScreenState extends State<CatalogScreen> {
     return AppShell(
       title: 'Diseños',
       actions: [
+        // ---- Botón de chats con badge rojo ----
+        Padding(
+          padding: const EdgeInsets.only(right: 4),
+          child: Stack(
+            clipBehavior: Clip.none,
+            children: [
+              IconButton(
+                onPressed: _goThreads,
+                icon: const Icon(Icons.chat_bubble_outline),
+                tooltip: 'Mis chats',
+              ),
+              if (_unread > 0)
+                Positioned(
+                  right: 6,
+                  top: 6,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: Colors.redAccent,
+                      borderRadius: BorderRadius.circular(999),
+                      border: Border.all(color: Colors.black, width: 1),
+                    ),
+                    constraints: const BoxConstraints(minWidth: 18),
+                    child: Text(
+                      _unread > 99 ? '99+' : '$_unread',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+
         IconButton(
           onPressed: () => Navigator.pushNamed(context, AppointmentsScreen.route),
           icon: const Icon(Icons.calendar_month_outlined),
