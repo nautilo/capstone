@@ -1,19 +1,43 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+
 import 'core/api.dart';
 import 'core/auth_state.dart';
 import 'core/chat_api.dart';
+
+// Screens
 import 'screens/login_screen.dart';
 import 'screens/catalog_screen.dart';
 import 'screens/appointments_screen.dart';
 import 'screens/create_design_screen.dart';
 import 'screens/artist_profile_screen.dart';
 import 'screens/threads_screen.dart';
+import 'screens/favorites_screen.dart';
+
+// Firebase + FCM + PNS
+import 'package:firebase_messaging/firebase_messaging.dart';
+import 'core/pns.dart';
+
+// Deep links para volver desde el pago
+import 'core/deeplinks.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Handler de mensajes en segundo plano (debe declararse top-level)
+  FirebaseMessaging.onBackgroundMessage(Pns.onBackgroundMessage);
+
+  // Bootstrap de tu app (JWT, sesión, etc.)
   await Api.init();
+
+  // Inicializa notificaciones (canales + listeners + FCM init)
+  await Pns.init();
+
   runApp(const ARTattooApp());
+
+  // 🔗 Importante: inicializar deep links DESPUÉS de montar la app,
+  // para que navigatorKey ya esté conectado y podamos navegar.
+  Future.microtask(() => DeepLinks.init(Pns.navigatorKey));
 }
 
 class ARTattooApp extends StatelessWidget {
@@ -56,8 +80,8 @@ class ARTattooApp extends StatelessWidget {
       ),
       elevatedButtonTheme: ElevatedButtonThemeData(
         style: ButtonStyle(
-          backgroundColor: MaterialStatePropertyAll(_darkScheme.primary),
-          foregroundColor: MaterialStatePropertyAll(_darkScheme.onPrimary),
+          backgroundColor: const MaterialStatePropertyAll(kYellow),
+          foregroundColor: const MaterialStatePropertyAll(kBlack),
           shape: MaterialStatePropertyAll(
             RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
           ),
@@ -68,8 +92,8 @@ class ARTattooApp extends StatelessWidget {
       ),
       filledButtonTheme: FilledButtonThemeData(
         style: ButtonStyle(
-          backgroundColor: MaterialStatePropertyAll(_darkScheme.primary),
-          foregroundColor: MaterialStatePropertyAll(_darkScheme.onPrimary),
+          backgroundColor: const MaterialStatePropertyAll(kYellow),
+          foregroundColor: const MaterialStatePropertyAll(kBlack),
           shape: MaterialStatePropertyAll(
             RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
           ),
@@ -77,7 +101,7 @@ class ARTattooApp extends StatelessWidget {
       ),
       textButtonTheme: TextButtonThemeData(
         style: ButtonStyle(
-          foregroundColor: MaterialStatePropertyAll(_darkScheme.primary),
+          foregroundColor: const MaterialStatePropertyAll(kYellow),
           overlayColor: MaterialStatePropertyAll(kYellow.withOpacity(0.08)),
         ),
       ),
@@ -138,31 +162,36 @@ class ARTattooApp extends StatelessWidget {
     return MaterialApp(
       title: 'ARTattoo',
       debugShowCheckedModeBanner: false,
-      themeMode: ThemeMode.dark, // Forzar oscuro; cambia a system si quieres
+      themeMode: ThemeMode.dark,
       theme: _darkTheme,
       darkTheme: _darkTheme,
+
+      // clave para que PNS y deep links naveguen
+      navigatorKey: Pns.navigatorKey,
+
+      // Si está logueado → catálogo; si no → login
       home: ValueListenableBuilder<AuthState>(
         valueListenable: authState,
         builder: (_, state, __) =>
             state.isLoggedIn ? const CatalogScreen() : const LoginScreen(),
       ),
+
+      // Rutas declaradas
       routes: {
         CatalogScreen.route: (_) => const CatalogScreen(),
         AppointmentsScreen.route: (_) => const AppointmentsScreen(),
         '/create-design': (_) => const CreateDesignScreen(),
-        // Ruta nombrada para ver hilos de chat
+        FavoritesScreen.route: (_) => const FavoritesScreen(),
         ThreadsScreen.route: (_) {
           final t = authState.token;
-          if (t == null || t.isEmpty) {
-            // Si no hay sesión, redirige a login
-            return const LoginScreen();
-          }
+          if (t == null || t.isEmpty) return const LoginScreen();
           return ThreadsScreen(api: ChatApi(t));
         },
-        // Ruta rápida al perfil del artista (sin args -> placeholder)
+        // Por defecto podemos navegar al perfil del artista con artistId=0
         ArtistProfileScreen.route: (_) => const ArtistProfileScreen(artistId: 0),
       },
-      // onGenerateRoute para pasar argumentos dinámicos (artistId/artistName)
+
+      // Rutas con argumentos
       onGenerateRoute: (settings) {
         if (settings.name == ArtistProfileScreen.route &&
             settings.arguments is Map) {
@@ -177,7 +206,6 @@ class ARTattooApp extends StatelessWidget {
             settings: settings,
           );
         }
-        // Ruta para Threads con posibilidad de inyectar token (poco común, pero útil en tests)
         if (settings.name == ThreadsScreen.route &&
             settings.arguments is String) {
           final token = settings.arguments as String;

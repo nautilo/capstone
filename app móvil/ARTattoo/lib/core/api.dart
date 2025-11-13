@@ -1,14 +1,18 @@
+// lib/core/api.dart
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'auth_state.dart';
 
 class Api {
-  // Usa SIEMPRE el mismo host que valida los JWT
-  static const base = 'http://167.114.145.34:8000';
+  // Usa SIEMPRE el mismo host que valida los JWT (backend Flask)
+  static const String base = 'http://167.114.145.34:8000';
+  // Servidor de pagos (Node / Mercado Pago)
+  static const String paymentsBase = 'http://167.114.145.34:8001';
 
   static SharedPreferences? _prefs;
 
+  // -------------------- Bootstrap --------------------
   static Future<void> init() async {
     _prefs = await SharedPreferences.getInstance();
 
@@ -31,7 +35,7 @@ class Api {
     }
   }
 
-  // ---------- Storage helpers ----------
+  // -------------------- Storage --------------------
   static Future<void> _save(Map data) async {
     final access  = data['access_token'] as String?;
     final refresh = data['refresh_token'] as String?;
@@ -63,7 +67,14 @@ class Api {
     authState.clear();
   }
 
-  // ---------- Headers ----------
+  static Future<void> registerPushToken(String token, {String platform = 'android'}) async {
+    try {
+      final uri = Uri.parse('$base/push/register');
+      await authedPost(uri, body: jsonEncode({'token': token, 'platform': platform}));
+    } catch (_) {}
+  }
+
+  // -------------------- Headers --------------------
   static Map<String, String> _headers({bool withAuth = true, String? tokenOverride}) {
     final h = {'Content-Type': 'application/json'};
     if (withAuth) {
@@ -75,7 +86,12 @@ class Api {
     return h;
   }
 
-  // ---------- JWT helpers (exp & refresh) ----------
+  // Para servidor de pagos (Node): no enviamos Authorization
+  static Map<String, String> _headersNode({bool json = true}) {
+    return { if (json) 'Content-Type': 'application/json' };
+  }
+
+  // -------------------- JWT (exp / refresh) --------------------
   static int? _jwtExp(String jwt) {
     try {
       final parts = jwt.split('.');
@@ -83,7 +99,7 @@ class Api {
       final payload = utf8.decode(base64Url.decode(base64Url.normalize(parts[1])));
       final map = jsonDecode(payload) as Map<String, dynamic>;
       final exp = map['exp'];
-      if (exp is int) return exp;                 // segundos Unix
+      if (exp is int) return exp;
       if (exp is String) return int.tryParse(exp);
     } catch (_) {}
     return null;
@@ -125,7 +141,7 @@ class Api {
     return tok;
   }
 
-  // ---------- Requests con retry en 401 ----------
+  // -------------------- Requests con retry 401 --------------------
   static Future<http.Response> authedGet(Uri uri) async {
     await ensureValidToken();
     var resp = await http.get(uri, headers: _headers());
@@ -150,7 +166,19 @@ class Api {
     return resp;
   }
 
-  // ---------- Auth ----------
+  static Future<http.Response> authedDelete(Uri uri) async {
+    await ensureValidToken();
+    var resp = await http.delete(uri, headers: _headers());
+    if (resp.statusCode == 401) {
+      final newTok = await _refreshAccessToken();
+      if (newTok != null) {
+        resp = await http.delete(uri, headers: _headers());
+      }
+    }
+    return resp;
+  }
+
+  // -------------------- Auth --------------------
   static Future<String?> login(String email, String pass) async {
     final r = await http.post(
       Uri.parse('$base/auth/login'),
@@ -181,7 +209,6 @@ class Api {
       body: jsonEncode({'email': email, 'password': pass, 'role': role, 'name': name}),
     );
     if (r.statusCode == 201) {
-      // ideal: backend devuelve tokens; si no, hacemos login
       final err = await login(email, pass);
       return err; // null si ok
     }
@@ -192,10 +219,22 @@ class Api {
     }
   }
 
-  // ---------- Designs ----------
-  static Future<List<Map<String, dynamic>>> getDesigns({int? artistId}) async {
-    final q = artistId != null ? '?artist_id=$artistId' : '';
-    final r = await http.get(Uri.parse('$base/designs$q'));
+  // -------------------- Designs --------------------
+  /// Soporta filtro por artista y búsqueda:
+  /// - q.startsWith('@') => por nombre/email de artista
+  /// - q normal          => por título/descr
+  /// Si hay token, usa GET autenticado para obtener `is_favorited`.
+  static Future<List<Map<String, dynamic>>> getDesigns({int? artistId, String? q}) async {
+    final params = <String, String>{};
+    if (artistId != null) params['artist_id'] = '$artistId';
+    if (q != null && q.trim().isNotEmpty) params['q'] = q.trim();
+
+    final uri = Uri.parse('$base/designs')
+        .replace(queryParameters: params.isEmpty ? null : params);
+
+    final t = authState.token;
+    final r = (t == null || t.isEmpty) ? await http.get(uri) : await authedGet(uri);
+
     if (r.statusCode != 200) throw Exception('No se pudo cargar el catálogo');
     return List<Map<String, dynamic>>.from(jsonDecode(r.body));
   }
@@ -221,7 +260,37 @@ class Api {
     return jsonDecode(r.body);
   }
 
-  // ---------- Appointments ----------
+  // -------------------- Favoritos --------------------
+  static Future<void> addFavorite(int designId) async {
+    final r = await authedPost(Uri.parse('$base/designs/$designId/favorite'));
+    if (r.statusCode != 200) {
+      throw Exception(_safeMsg(r.body) ?? 'Error al agregar a favoritos');
+    }
+  }
+
+  static Future<void> removeFavorite(int designId) async {
+    final r = await authedDelete(Uri.parse('$base/designs/$designId/favorite'));
+    if (r.statusCode != 200) {
+      throw Exception(_safeMsg(r.body) ?? 'Error al quitar de favoritos');
+    }
+  }
+
+  static Future<List<Map<String,dynamic>>> myFavorites() async {
+    final r = await authedGet(Uri.parse('$base/favorites/me'));
+    if (r.statusCode != 200) throw Exception('Error al cargar favoritos');
+    return List<Map<String,dynamic>>.from(jsonDecode(r.body));
+  }
+
+  // -------------------- Artista --------------------
+  static Future<Map<String,dynamic>> getArtist(int id) async {
+    final r = await http.get(Uri.parse('$base/artists/$id'));
+    if (r.statusCode != 200) {
+      throw Exception(_safeMsg(r.body) ?? 'Artista no encontrado');
+    }
+    return Map<String,dynamic>.from(jsonDecode(r.body));
+  }
+
+  // -------------------- Appointments --------------------
   static Future<Map> book({
     required int designId,
     required int artistId,
@@ -261,7 +330,81 @@ class Api {
     if (r.statusCode != 200) throw Exception('No se pudo cancelar');
   }
 
-  // Helper para extraer msg seguro
+  // -------------------- Pagos (confirmación bajo demanda) --------------------
+  /// Crea el checkout y devuelve la URL (init_point).
+  static Future<String> createCheckout(int appointmentId) async {
+    // Endpoint en el servidor de pagos (Node)
+    final uri = Uri.parse('$paymentsBase/payments/create');
+
+    final r = await http.post(
+      uri,
+      headers: _headersNode(),
+      body: jsonEncode({'appointment_id': appointmentId}),
+    );
+
+    if (r.statusCode == 404) {
+      throw Exception('Endpoint /payments/create no disponible en el servidor de pagos');
+    }
+    if (r.statusCode < 200 || r.statusCode >= 300) {
+      throw Exception(_safeMsg(r.body) ?? 'Error al crear pago');
+    }
+    final data = jsonDecode(r.body) as Map<String, dynamic>;
+    return (data['sandbox_init_point'] as String?) ?? (data['init_point'] as String);
+  }
+
+  /// Confirma contra Node si hay pago approved para esa cita.
+  /// Node, si ve approved, notifica al backend Flask y SOLO entonces responde paid:true.
+  static Future<bool> confirmPayment(int appointmentId, {String? paymentId}) async {
+    final uri = Uri.parse('$paymentsBase/payments/confirm');
+    final payload = <String, dynamic>{'appointment_id': appointmentId};
+    if (paymentId != null && paymentId.isNotEmpty) payload['payment_id'] = paymentId;
+
+    final r = await http.post(
+      uri,
+      headers: _headersNode(),
+      body: jsonEncode(payload),
+    );
+
+    if (r.statusCode != 200) {
+      throw Exception(_safeMsg(r.body) ?? 'No fue posible confirmar pago');
+    }
+    final data = jsonDecode(r.body) as Map<String, dynamic>;
+    return data['paid'] == true;
+  }
+
+  static Future<String> mpLinkUrl() async {
+    final uri = Uri.parse('$base/mp/link');
+    final r = await authedGet(uri);
+    if (r.statusCode == 404) {
+      throw Exception('Endpoint /mp/link no disponible en el backend');
+    }
+    if (r.statusCode != 200) {
+      throw Exception(_safeMsg(r.body) ?? 'No fue posible obtener el link de Mercado Pago');
+    }
+    final data = jsonDecode(r.body) as Map<String, dynamic>;
+    final url = data['auth_url'] as String?;
+    if (url == null || url.isEmpty) {
+      throw Exception('Respuesta inválida desde /mp/link');
+    }
+    return url;
+  }
+
+  // -------------------- Upload (imágenes para chat) --------------------
+  static Future<String> uploadImageBase64(String b64) async {
+    final r = await authedPost(
+      Uri.parse('$base/upload/image'),
+      body: jsonEncode({"base64": b64}),
+    );
+    if (r.statusCode != 200) {
+      throw Exception(_safeMsg(r.body) ?? 'Error subiendo imagen');
+    }
+    final m = jsonDecode(r.body) as Map<String, dynamic>;
+    final url = m['url'] as String?;
+    if (url == null || url.isEmpty) throw Exception('Respuesta inválida al subir imagen');
+    return url;
+  }
+
+  // -------------------- Utils --------------------
   static String? _safeMsg(String body) {
     try {
       final m = jsonDecode(body);
