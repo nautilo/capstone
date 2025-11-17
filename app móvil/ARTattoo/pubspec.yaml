@@ -15,7 +15,7 @@ dependencies:
   google_fonts: ^6.2.1
   url_launcher: ^6.3.0
   app_links: ^6.2.0
-  image_picker: ^1.0.7
+  image_picker: ^1.2.1
   # Push & notificaciones
   firebase_core:
   firebase_messaging:

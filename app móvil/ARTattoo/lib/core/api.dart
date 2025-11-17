@@ -166,6 +166,19 @@ class Api {
     return resp;
   }
 
+  static Future<http.Response> authedPut(Uri uri, {Object? body}) async {
+    await ensureValidToken();
+    var resp = await http.put(uri, headers: _headers(), body: body);
+    if (resp.statusCode == 401) {
+      final newTok = await _refreshAccessToken();
+      if (newTok != null) {
+        resp = await http.put(uri, headers: _headers(), body: body);
+      }
+    }
+    return resp;
+  }
+
+
   static Future<http.Response> authedDelete(Uri uri) async {
     await ensureValidToken();
     var resp = await http.delete(uri, headers: _headers());
@@ -259,6 +272,36 @@ class Api {
     }
     return jsonDecode(r.body);
   }
+
+  static Future<Map?> updateDesign({
+    required int id,
+    required String title,
+    String? description,
+    String? imageUrl,
+    int? price,
+  }) async {
+    final r = await authedPut(
+      Uri.parse('$base/designs/$id'),
+      body: jsonEncode({
+        'title': title,
+        'description': description,
+        'image_url': imageUrl,
+        'price': price,
+      }),
+    );
+    if (r.statusCode != 200) {
+      throw Exception(_safeMsg(r.body) ?? 'Error actualizando diseño');
+    }
+    return jsonDecode(r.body);
+  }
+
+  static Future<void> deleteDesign(int id) async {
+    final r = await authedDelete(Uri.parse('$base/designs/$id'));
+    if (r.statusCode != 200 && r.statusCode != 204) {
+      throw Exception(_safeMsg(r.body) ?? 'Error al eliminar diseño');
+    }
+  }
+
 
   // -------------------- Favoritos --------------------
   static Future<void> addFavorite(int designId) async {

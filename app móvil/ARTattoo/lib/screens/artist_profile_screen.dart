@@ -5,12 +5,18 @@ import '../widgets/common.dart';
 import 'design_detail_screen.dart';
 import '../core/chat_api.dart';
 import 'chat_screen.dart';
+import 'create_design_screen.dart';
 
 class ArtistProfileScreen extends StatefulWidget {
   static const route = '/artist';
   final int artistId;
   final String? artistName;
-  const ArtistProfileScreen({super.key, required this.artistId, this.artistName});
+
+  const ArtistProfileScreen({
+    super.key,
+    required this.artistId,
+    this.artistName,
+  });
 
   @override
   State<ArtistProfileScreen> createState() => _ArtistProfileScreenState();
@@ -37,7 +43,7 @@ class _ArtistProfileScreenState extends State<ArtistProfileScreen> {
 
   Future<void> _toggleFav(Map<String, dynamic> d) async {
     try {
-      if ((d['is_favorited'] == true)) {
+      if (d['is_favorited'] == true) {
         await Api.removeFavorite(d['id']);
         d['is_favorited'] = false;
         d['likes_count'] = (d['likes_count'] ?? 1) - 1;
@@ -49,7 +55,8 @@ class _ArtistProfileScreenState extends State<ArtistProfileScreen> {
       if (mounted) setState(() {});
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(ko(e.toString()));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(ko(e.toString()));
     }
   }
 
@@ -68,7 +75,9 @@ class _ArtistProfileScreenState extends State<ArtistProfileScreen> {
       if (!mounted) return;
       Navigator.push(
         context,
-        MaterialPageRoute(builder: (_) => ChatScreen(api: api, threadId: threadId)),
+        MaterialPageRoute(
+          builder: (_) => ChatScreen(api: api, threadId: threadId),
+        ),
       );
     } catch (e) {
       if (!mounted) return;
@@ -78,8 +87,64 @@ class _ArtistProfileScreenState extends State<ArtistProfileScreen> {
     }
   }
 
+  Future<void> _goEditDesign(Map<String, dynamic> d) async {
+    final changed = await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => CreateDesignScreen(design: d),
+      ),
+    );
+    if (changed == true && mounted) {
+      _refresh();
+    }
+  }
+
+  Future<void> _deleteDesign(Map<String, dynamic> d) async {
+    final int? id = d['id'] as int?;
+    if (id == null) return;
+
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Eliminar diseño'),
+        content: const Text(
+          '¿Seguro que quieres eliminar este diseño? '
+          'Esta acción no se puede deshacer.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Eliminar'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm != true) return;
+
+    try {
+      await Api.deleteDesign(id);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(ok('Diseño eliminado'));
+      _refresh();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        ko('No se pudo eliminar: $e'),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    final canEdit =
+        authState.role == 'artist' && authState.userId == widget.artistId;
+
     return AppShell(
       title: widget.artistName ?? 'Artista #${widget.artistId}',
       actions: [
@@ -106,7 +171,8 @@ class _ArtistProfileScreenState extends State<ArtistProfileScreen> {
                   return Text('Error: ${snap.error}');
                 }
                 final a = snap.data ?? {};
-                final name = a['name']?.toString() ?? (widget.artistName ?? 'Artista #${widget.artistId}');
+                final name = a['name']?.toString() ??
+                    (widget.artistName ?? 'Artista #${widget.artistId}');
                 final designsCount = a['designs_count'] ?? 0;
                 final likesTotal = a['likes_total'] ?? 0;
 
@@ -124,7 +190,15 @@ class _ArtistProfileScreenState extends State<ArtistProfileScreen> {
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Text(name, style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700)),
+                              Text(
+                                name,
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .titleLarge
+                                    ?.copyWith(
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                              ),
                               const SizedBox(height: 4),
                               Text('Diseños: $designsCount • ❤ $likesTotal'),
                               const SizedBox(height: 6),
@@ -147,9 +221,13 @@ class _ArtistProfileScreenState extends State<ArtistProfileScreen> {
             const Gap(12),
 
             // Título grilla
-            Text('Diseños del artista', style: Theme.of(context).textTheme.titleMedium),
+            Text(
+              'Diseños del artista',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
 
             const Gap(8),
+
             // Grilla de diseños del artista
             FutureBuilder<List<Map<String, dynamic>>>(
               future: _fDesigns,
@@ -160,11 +238,16 @@ class _ArtistProfileScreenState extends State<ArtistProfileScreen> {
                 if (snap.hasError) {
                   return Text('Error: ${snap.error}');
                 }
-                final items = snap.data ?? const <Map<String, dynamic>>[];
+                final items =
+                    snap.data ?? const <Map<String, dynamic>>[];
                 if (items.isEmpty) {
                   return const Padding(
                     padding: EdgeInsets.symmetric(vertical: 32),
-                    child: Center(child: Text('Este artista aún no tiene diseños publicados')),
+                    child: Center(
+                      child: Text(
+                        'Este artista aún no tiene diseños publicados',
+                      ),
+                    ),
                   );
                 }
 
@@ -172,7 +255,8 @@ class _ArtistProfileScreenState extends State<ArtistProfileScreen> {
                   physics: const NeverScrollableScrollPhysics(),
                   shrinkWrap: true,
                   padding: const EdgeInsets.symmetric(vertical: 8),
-                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                  gridDelegate:
+                      const SliverGridDelegateWithFixedCrossAxisCount(
                     crossAxisCount: 2,
                     childAspectRatio: .60,
                     crossAxisSpacing: 12,
@@ -186,77 +270,156 @@ class _ArtistProfileScreenState extends State<ArtistProfileScreen> {
                       child: InkWell(
                         onTap: () => Navigator.push(
                           context,
-                          MaterialPageRoute(builder: (_) => DesignDetailScreen(design: d)),
+                          MaterialPageRoute(
+                            builder: (_) =>
+                                DesignDetailScreen(design: d),
+                          ),
                         ),
                         child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          crossAxisAlignment:
+                              CrossAxisAlignment.stretch,
                           children: [
                             AspectRatio(
                               aspectRatio: 1,
-                              child: (d['image_url'] != null && (d['image_url'] as String).isNotEmpty)
+                              child: (d['image_url'] != null &&
+                                      (d['image_url'] as String)
+                                          .isNotEmpty)
                                   ? Image.network(
                                       d['image_url'],
                                       fit: BoxFit.cover,
-                                      errorBuilder: (_, __, ___) => const ColoredBox(color: Color(0x11000000)),
+                                      errorBuilder:
+                                          (_, __, ___) =>
+                                              const ColoredBox(
+                                        color: Color(0x11000000),
+                                      ),
                                     )
-                                  : const ColoredBox(color: Color(0x11000000)),
+                                  : const ColoredBox(
+                                      color: Color(0x11000000),
+                                    ),
                             ),
                             Expanded(
                               child: Padding(
-                                padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
+                                padding:
+                                    const EdgeInsets.fromLTRB(
+                                        10, 8, 10, 8),
                                 child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                  crossAxisAlignment:
+                                      CrossAxisAlignment.start,
+                                  mainAxisAlignment:
+                                      MainAxisAlignment.spaceBetween,
                                   children: [
                                     Text(
                                       d['title']?.toString() ?? '—',
-                                      style: const TextStyle(fontWeight: FontWeight.w700),
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.w700,
+                                      ),
                                       maxLines: 1,
                                       overflow: TextOverflow.ellipsis,
                                     ),
                                     Text(
-                                      d['artist_name']?.toString() ?? '—',
-                                      style: TextStyle(color: Colors.grey[700], fontSize: 12),
+                                      d['artist_name']
+                                              ?.toString() ??
+                                          '—',
+                                      style: TextStyle(
+                                        color: Colors.grey[700],
+                                        fontSize: 12,
+                                      ),
                                       maxLines: 1,
                                       overflow: TextOverflow.ellipsis,
                                     ),
                                     Row(
                                       children: [
                                         FilledButton.tonal(
-                                          onPressed: () => Navigator.push(
+                                          onPressed: () =>
+                                              Navigator.push(
                                             context,
-                                            MaterialPageRoute(builder: (_) => DesignDetailScreen(design: d)),
+                                            MaterialPageRoute(
+                                              builder: (_) =>
+                                                  DesignDetailScreen(
+                                                      design:
+                                                          d),
+                                            ),
                                           ),
-                                          style: FilledButton.styleFrom(
-                                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                                            minimumSize: const Size(0, 32),
-                                            visualDensity: VisualDensity.compact,
+                                          style: FilledButton
+                                              .styleFrom(
+                                            padding: const EdgeInsets
+                                                .symmetric(
+                                              horizontal: 10,
+                                              vertical: 6,
+                                            ),
+                                            minimumSize:
+                                                const Size(0, 32),
+                                            visualDensity:
+                                                VisualDensity
+                                                    .compact,
                                           ),
                                           child: const Text('Ver'),
                                         ),
+                                        if (canEdit) ...[
+                                          const SizedBox(width: 4),
+                                          IconButton(
+                                            tooltip:
+                                                'Editar diseño',
+                                            icon: const Icon(
+                                              Icons.edit_outlined,
+                                            ),
+                                            visualDensity:
+                                                VisualDensity
+                                                    .compact,
+                                            onPressed: () =>
+                                                _goEditDesign(d),
+                                          ),
+                                          IconButton(
+                                            tooltip:
+                                                'Eliminar diseño',
+                                            icon: const Icon(
+                                              Icons.delete_outline,
+                                            ),
+                                            visualDensity:
+                                                VisualDensity
+                                                    .compact,
+                                            onPressed: () =>
+                                                _deleteDesign(d),
+                                          ),
+                                        ],
                                         const Spacer(),
                                         // Likes + corazón
                                         Row(
                                           children: [
-                                            Text('${d['likes_count'] ?? 0}'),
+                                            Text(
+                                              '${d['likes_count'] ?? 0}',
+                                            ),
                                             IconButton(
-                                              tooltip: (d['is_favorited'] == true)
+                                              tooltip: (d['is_favorited'] ==
+                                                          true)
                                                   ? 'Quitar de favoritos'
                                                   : 'Agregar a favoritos',
                                               onPressed: () async {
-                                                if (authState.token == null || authState.token!.isEmpty) {
-                                                  if (!mounted) return;
-                                                  ScaffoldMessenger.of(context).showSnackBar(
+                                                if (authState
+                                                        .token ==
+                                                    null ||
+                                                    authState
+                                                        .token!
+                                                        .isEmpty) {
+                                                  if (!mounted)
+                                                    return;
+                                                  ScaffoldMessenger
+                                                          .of(
+                                                              context)
+                                                      .showSnackBar(
                                                     ko('Inicia sesión para agregar a favoritos'),
                                                   );
                                                   return;
                                                 }
-                                                await _toggleFav(d);
+                                                await _toggleFav(
+                                                    d);
                                               },
                                               icon: Icon(
-                                                (d['is_favorited'] == true)
+                                                (d['is_favorited'] ==
+                                                        true)
                                                     ? Icons.favorite
-                                                    : Icons.favorite_border,
+                                                    : Icons
+                                                        .favorite_border,
                                               ),
                                             ),
                                           ],
